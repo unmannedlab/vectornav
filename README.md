@@ -1,6 +1,21 @@
 Vectornav ROS Driver
 ====================
 
+
+Specific to the Lab do the following
+
+Connect Vectornav VN-300
+ls -al /dev/ttyUSB0
+sudo chmod 777 /dev/ttyUSB0
+
+cat /sys/bus/usb-serial/devices/ttyUSB0/latency_timer
+
+If latency is 16 change it in sudo
+sudo bash
+echo 0 > /sys/bus/usb-serial/devices/ttyUSB0/latency_timer
+
+The driver is changed so that it works at 921600 and gives 400Hz data
+
 A ROS node for VectorNav INS & GPS devices.
 
 This package provides a sensor_msg interface for the VN100, 200, & 300 

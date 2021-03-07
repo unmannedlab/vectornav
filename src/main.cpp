@@ -223,11 +223,10 @@ int main(int argc, char *argv[])
 
     // Set Data output Freq [Hz]
     vs.writeAsyncDataOutputFrequency(async_output_rate);
-
     // Configure binary output message
     BinaryOutputRegister bor(
             ASYNCMODE_PORT1,
-            SensorImuRate / async_output_rate,  // update rate [ms]
+            1, //SensorImuRate / async_output_rate,  // update rate [ms]
             COMMONGROUP_QUATERNION
             | COMMONGROUP_ANGULARRATE
             | COMMONGROUP_POSITION
@@ -236,16 +235,34 @@ int main(int argc, char *argv[])
             TIMEGROUP_NONE,
             IMUGROUP_NONE,
             GPSGROUP_NONE,
-            ATTITUDEGROUP_YPRU, //<-- returning yaw pitch roll uncertainties
-            INSGROUP_INSSTATUS
-            | INSGROUP_POSLLA
-            | INSGROUP_POSECEF
-            | INSGROUP_VELBODY
-            | INSGROUP_ACCELECEF,
-            GPSGROUP_NONE);
+            ATTITUDEGROUP_YPRU,
+	    INSGROUP_NONE,
+	    GPSGROUP_NONE);
+//, //<-- returning yaw pitch roll uncertainties
+//            INSGROUP_INSSTATUS
+//            | INSGROUP_POSLLA
+//            | INSGROUP_POSECEF
+//            | INSGROUP_VELBODY
+//            | INSGROUP_ACCELECEF,
+//            GPSGROUP_NONE);
 
     vs.writeBinaryOutput1(bor);
+    /*
+	BinaryOutputRegister nor(
+            ASYNCMODE_PORT1,
+            4, //SensorImuRate / async_output_rate,  // update rate [ms]
+             COMMONGROUP_NONE,
+            TIMEGROUP_NONE,
+            IMUGROUP_NONE,
+            GPSGROUP_NONE,
+            ATTITUDEGROUP_NONE,
+	    INSGROUP_NONE,
+	    GPSGROUP_NONE);
+	*/
+//, //<-- returning yaw pitch roll uncertainties
 
+    //vs.writeBinaryOutput2(nor);
+    //vs.writeBinaryOutput3(nor);
     // Set Data output Freq [Hz]
     vs.writeAsyncDataOutputFrequency(async_output_rate);
     vs.registerAsyncPacketReceivedHandler(&user_data, BinaryAsyncMessageReceived);
