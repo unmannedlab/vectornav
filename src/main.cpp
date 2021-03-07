@@ -73,6 +73,13 @@ std::string frame_id;
 bool tf_ned_to_enu;
 bool frame_based_enu;
 
+//Timestamps
+bool referencetime;
+ros::Time refROS;
+ros::Time refIMU;
+int imu_seq = 0;
+
+
 // Initial position after getting a GPS fix.
 vec3d initial_position;
 bool initial_position_set = false;
@@ -229,13 +236,15 @@ int main(int argc, char *argv[])
             1, //SensorImuRate / async_output_rate,  // update rate [ms]
             COMMONGROUP_QUATERNION
             | COMMONGROUP_ANGULARRATE
-            | COMMONGROUP_POSITION
+            //| COMMONGROUP_POSITION
             | COMMONGROUP_ACCEL
+	    | COMMONGROUP_TIMESTARTUP
             | COMMONGROUP_MAGPRES,
             TIMEGROUP_NONE,
             IMUGROUP_NONE,
             GPSGROUP_NONE,
-            ATTITUDEGROUP_YPRU,
+            //ATTITUDEGROUP_YPRU,
+            ATTITUDEGROUP_NONE,
 	    INSGROUP_NONE,
 	    GPSGROUP_NONE);
 //, //<-- returning yaw pitch roll uncertainties
@@ -292,10 +301,25 @@ void BinaryAsyncMessageReceived(void* userData, Packet& p, size_t index)
 {
     vn::sensors::CompositeData cd = vn::sensors::CompositeData::parse(p);
     UserData user_data = *static_cast<UserData*>(userData);
+    
+    //TimeStamps
+    if(!referencetime){
+	referencetime = true;
+	refROS = ros::Time::now();
+	if(cd.hasTimeStartup()){
+		refIMU = ros::Time((double) cd.timeStartup()*1E-9);
+	}
+    }
+
+    //for printing
+    //fprintf(stderr, "IMU count %d has %d time %lf\n", imu_seq++, cd.hasTimeStartup(), (double)cd.timeStartup()*1E-9);
+    //if(imu_seq == 400)
+	//	imu_seq = 0;
 
     // IMU
     sensor_msgs::Imu msgIMU;
-    msgIMU.header.stamp = ros::Time::now();
+    //msgIMU.header.stamp = ros::Time::now();
+    msgIMU.header.stamp = refROS + (ros::Time((double) cd.timeStartup()*1E-9) - refIMU);
     msgIMU.header.frame_id = frame_id;
 
     if (cd.hasQuaternion() && cd.hasAngularRate() && cd.hasAcceleration())
