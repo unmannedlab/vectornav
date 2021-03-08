@@ -229,7 +229,7 @@ int main(int argc, char *argv[])
     user_data.device_family = vs.determineDeviceFamily();
 
     // Set Data output Freq [Hz]
-    vs.writeAsyncDataOutputFrequency(async_output_rate);
+    //vs.writeAsyncDataOutputFrequency(async_output_rate);
     // Configure binary output message
     BinaryOutputRegister bor(
             ASYNCMODE_PORT1,
@@ -255,7 +255,8 @@ int main(int argc, char *argv[])
 //            | INSGROUP_ACCELECEF,
 //            GPSGROUP_NONE);
 
-    vs.writeBinaryOutput1(bor);
+	vs.writeAsyncDataOutputType(AsciiAsync::VNOFF);
+	vs.writeBinaryOutput1(bor);
     /*
 	BinaryOutputRegister nor(
             ASYNCMODE_PORT1,
@@ -273,7 +274,7 @@ int main(int argc, char *argv[])
     //vs.writeBinaryOutput2(nor);
     //vs.writeBinaryOutput3(nor);
     // Set Data output Freq [Hz]
-    vs.writeAsyncDataOutputFrequency(async_output_rate);
+    //vs.writeAsyncDataOutputFrequency(async_output_rate);
     vs.registerAsyncPacketReceivedHandler(&user_data, BinaryAsyncMessageReceived);
 
     // You spin me right round, baby
