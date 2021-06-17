@@ -79,13 +79,14 @@ bool reSynchronize {true};
 ros::Time lastSyncTime {0};
 ros::Time prevTime {0};
 double dataTimeZero {0.0};
+int nonSyncCount {0};
 
-int CB_EPSILON {100000}; // 0.1 milli-second 
-constexpr double IMU_RATE {400}; // hz 
+int CB_EPSILON {500000}; // 0.5 milli-second 
+constexpr double IMU_RATE {200}; // hz 
 constexpr double SEC_2_NANOSEC {1E9}; // Seconds to Nanoseconds
 constexpr double NANOSEC_2_SEC {1E-9}; // Nanoseconds to Seconds
 
-constexpr int32_t RESYNC_INTERVAL {5U}; // Nanoseconds
+constexpr int32_t RESYNC_INTERVAL {5}; // Seconds
 constexpr int32_t DATA_INTERVAL { static_cast<int32_t>(SEC_2_NANOSEC / IMU_RATE)}; // Nanoseconds
 
 
@@ -230,7 +231,7 @@ int main(int argc, char *argv[])
     // Configure binary output message
     BinaryOutputRegister bor(
             ASYNCMODE_PORT1,
-            1, //SensorImuRate / async_output_rate,  // update rate [ms]
+            2, //SensorImuRate / async_output_rate,  // update rate [ms]
             COMMONGROUP_QUATERNION
             | COMMONGROUP_ANGULARRATE
             //| COMMONGROUP_POSITION
@@ -315,6 +316,7 @@ void BinaryAsyncMessageReceived(void* userData, Packet& p, size_t index)
     // Resynchronize if necessary
     if(reSynchronize)
     {
+        // Check if CPU delta time is within bounds of data interval
         if (deltaTime.nsec >= (DATA_INTERVAL - CB_EPSILON) &&
             deltaTime.nsec <= (DATA_INTERVAL + CB_EPSILON)) 
         {
@@ -322,6 +324,8 @@ void BinaryAsyncMessageReceived(void* userData, Packet& p, size_t index)
             dataTimeZero = dataTime;
             reSynchronize = false;
             isSynced = true;
+            ROS_INFO_STREAM("Frame count out of sync: " << nonSyncCount);
+            nonSyncCount = 0;
         } 
         else 
         {
@@ -329,6 +333,7 @@ void BinaryAsyncMessageReceived(void* userData, Packet& p, size_t index)
             ROS_DEBUG(  "Data not within acceptable window for synchronization. "
                         "Difference seen: %d ",
                         prevTime.nsec);
+            ++nonSyncCount;
         }
     }
 
@@ -337,8 +342,10 @@ void BinaryAsyncMessageReceived(void* userData, Packet& p, size_t index)
     msgIMU.header.stamp = lastSyncTime + ros::Duration((dataTime-dataTimeZero)*NANOSEC_2_SEC);
     msgIMU.header.frame_id = frame_id;
 
+    // Don't publish data unless synchronized
     if (isSynced)
-    {    
+    {   
+ 
         if (cd.hasQuaternion() && cd.hasAngularRate() && cd.hasAcceleration())
         {
 
@@ -439,66 +446,69 @@ void BinaryAsyncMessageReceived(void* userData, Packet& p, size_t index)
             msgMag.magnetic_field.z = mag[2];
             pubMag.publish(msgMag);
         }
-
+        
         // GPS
         if (user_data.device_family != VnSensor::Family::VnSensor_Family_Vn100)
         {
-            vec3d lla = cd.positionEstimatedLla();
-
-            sensor_msgs::NavSatFix msgGPS;
-            msgGPS.header.stamp = msgIMU.header.stamp;
-            msgGPS.header.frame_id = msgIMU.header.frame_id;
-            msgGPS.latitude = lla[0];
-            msgGPS.longitude = lla[1];
-            msgGPS.altitude = lla[2];
-            pubGPS.publish(msgGPS);
-
-            // Odometry
-            if (pubOdom.getNumSubscribers() > 0)
+            if (cd.hasPositionEstimatedLla())
             {
-                nav_msgs::Odometry msgOdom;
-                msgOdom.header.stamp = msgIMU.header.stamp;
-                msgOdom.header.frame_id = msgIMU.header.frame_id;
-                vec3d pos = cd.positionEstimatedEcef();
+                vec3d lla = cd.positionEstimatedLla();
 
-                if (!initial_position_set)
+                sensor_msgs::NavSatFix msgGPS;
+                msgGPS.header.stamp = msgIMU.header.stamp;
+                msgGPS.header.frame_id = msgIMU.header.frame_id;
+                msgGPS.latitude = lla[0];
+                msgGPS.longitude = lla[1];
+                msgGPS.altitude = lla[2];
+                pubGPS.publish(msgGPS);
+
+                // Odometry
+                if (pubOdom.getNumSubscribers() > 0)
                 {
-                    initial_position_set = true;
-                    initial_position.x = pos[0];
-                    initial_position.y = pos[1];
-                    initial_position.z = pos[2];
+                    nav_msgs::Odometry msgOdom;
+                    msgOdom.header.stamp = msgIMU.header.stamp;
+                    msgOdom.header.frame_id = msgIMU.header.frame_id;
+                    vec3d pos = cd.positionEstimatedEcef();
+
+                    if (!initial_position_set)
+                    {
+                        initial_position_set = true;
+                        initial_position.x = pos[0];
+                        initial_position.y = pos[1];
+                        initial_position.z = pos[2];
+                    }
+
+                    msgOdom.pose.pose.position.x = pos[0] - initial_position[0];
+                    msgOdom.pose.pose.position.y = pos[1] - initial_position[1];
+                    msgOdom.pose.pose.position.z = pos[2] - initial_position[2];
+
+                    if (cd.hasQuaternion())
+                    {
+                        vec4f q = cd.quaternion();
+
+                        msgOdom.pose.pose.orientation.x = q[0];
+                        msgOdom.pose.pose.orientation.y = q[1];
+                        msgOdom.pose.pose.orientation.z = q[2];
+                        msgOdom.pose.pose.orientation.w = q[3];
+                    }
+                    if (cd.hasVelocityEstimatedBody())
+                    {
+                        vec3f vel = cd.velocityEstimatedBody();
+
+                        msgOdom.twist.twist.linear.x = vel[0];
+                        msgOdom.twist.twist.linear.y = vel[1];
+                        msgOdom.twist.twist.linear.z = vel[2];
+                    }
+                    if (cd.hasAngularRate())
+                    {
+                        vec3f ar = cd.angularRate();
+
+                        msgOdom.twist.twist.angular.x = ar[0];
+                        msgOdom.twist.twist.angular.y = ar[1];
+                        msgOdom.twist.twist.angular.z = ar[2];
+                    }
+                    pubOdom.publish(msgOdom);
                 }
-
-                msgOdom.pose.pose.position.x = pos[0] - initial_position[0];
-                msgOdom.pose.pose.position.y = pos[1] - initial_position[1];
-                msgOdom.pose.pose.position.z = pos[2] - initial_position[2];
-
-                if (cd.hasQuaternion())
-                {
-                    vec4f q = cd.quaternion();
-
-                    msgOdom.pose.pose.orientation.x = q[0];
-                    msgOdom.pose.pose.orientation.y = q[1];
-                    msgOdom.pose.pose.orientation.z = q[2];
-                    msgOdom.pose.pose.orientation.w = q[3];
-                }
-                if (cd.hasVelocityEstimatedBody())
-                {
-                    vec3f vel = cd.velocityEstimatedBody();
-
-                    msgOdom.twist.twist.linear.x = vel[0];
-                    msgOdom.twist.twist.linear.y = vel[1];
-                    msgOdom.twist.twist.linear.z = vel[2];
-                }
-                if (cd.hasAngularRate())
-                {
-                    vec3f ar = cd.angularRate();
-
-                    msgOdom.twist.twist.angular.x = ar[0];
-                    msgOdom.twist.twist.angular.y = ar[1];
-                    msgOdom.twist.twist.angular.z = ar[2];
-                }
-                pubOdom.publish(msgOdom);
             }
         }
 
@@ -526,12 +536,14 @@ void BinaryAsyncMessageReceived(void* userData, Packet& p, size_t index)
             pubPres.publish(msgPres);
         }
     }
-    
+
     // Resynchronization check 
-    const ros::Duration lastSyncDelta = currTime - lastSyncTime;
-    if ((lastSyncTime.sec > 0) && (lastSyncDelta.sec >= RESYNC_INTERVAL)) 
+    ros::Duration lastSyncDelta = currTime - lastSyncTime;
+    if ((lastSyncDelta.toSec() >= RESYNC_INTERVAL)) 
     {
         reSynchronize = true;
-        ROS_INFO("Re-Sync");
     }
+    
+    // Increment time history
+    prevTime = currTime;
 }
