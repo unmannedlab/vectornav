@@ -1,0 +1,1 @@
+SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6001", ATTRS{manufacturer}=="FTDI", MODE="666", RUN+="/bin/setserial /dev/ttyUSB0 low_latency"
