@@ -25,6 +25,7 @@
 
 #include <iostream>
 #include <cmath>
+#include <vector>
 // No need to define PI twice if we already have it included...
 //#define M_PI 3.14159265358979323846  /* M_PI */
 
@@ -73,11 +74,19 @@ std::string frame_id;
 bool tf_ned_to_enu;
 bool frame_based_enu;
 
-//Timestamps
-bool referencetime;
-ros::Time refROS;
-ros::Time refIMU;
-int imu_seq = 0;
+bool isSynced {false};
+bool reSynchronize {true};
+ros::Time lastSyncTime {0};
+ros::Time prevTime {0};
+double dataTimeZero {0.0};
+
+int CB_EPSILON {100000}; // 0.1 milli-second 
+constexpr double IMU_RATE {400}; // hz 
+constexpr double SEC_2_NANOSEC {1E9}; // Seconds to Nanoseconds
+constexpr double NANOSEC_2_SEC {1E-9}; // Nanoseconds to Seconds
+
+constexpr int32_t RESYNC_INTERVAL {5U}; // Nanoseconds
+constexpr int32_t DATA_INTERVAL { static_cast<int32_t>(SEC_2_NANOSEC / IMU_RATE)}; // Nanoseconds
 
 
 // Initial position after getting a GPS fix.
@@ -159,15 +168,11 @@ int main(int argc, char *argv[])
     // Create a VnSensor object and connect to sensor
     VnSensor vs;
 
-    // Default baudrate variable
-    int defaultBaudrate;
     // Run through all of the acceptable baud rates until we are connected
-    // Looping in case someone has changed the default
-    bool baudSet = false;
-    while(!baudSet){
-        // Make this variable only accessible in the while loop
-        static int i = 0;
-        defaultBaudrate = vs.supportedBaudrates()[i];
+    for(uint8_t i = 0; i < vs.supportedBaudrates().size(); ++i)
+    {
+        // Default baudrate variable
+        int defaultBaudrate = vs.supportedBaudrates()[i];
         ROS_INFO("Connecting with default at %d", defaultBaudrate);
         // Default response was too low and retransmit time was too long by default.
         // They would cause errors
@@ -187,7 +192,7 @@ int main(int argc, char *argv[])
                 vs.changeBaudRate(SensorBaudrate);
                 // Only makes it here once we have the default correct
                 ROS_INFO("Connected baud rate is %d",vs.baudrate());
-                baudSet = true;
+                break;
             }
         }
         // Catch all oddities
@@ -195,14 +200,6 @@ int main(int argc, char *argv[])
             // Disconnect if we had the wrong default and we were connected
             vs.disconnect();
             ros::Duration(0.2).sleep();
-        }
-        // Increment the default iterator
-        i++;
-        // There are only 9 available data rates, if no connection
-        // made yet possibly a hardware malfunction?
-        if(i > 8)
-        {
-            break;
         }
     }
 
@@ -238,15 +235,15 @@ int main(int argc, char *argv[])
             | COMMONGROUP_ANGULARRATE
             //| COMMONGROUP_POSITION
             | COMMONGROUP_ACCEL
-	    | COMMONGROUP_TIMESTARTUP
+            | COMMONGROUP_TIMESTARTUP
             | COMMONGROUP_MAGPRES,
             TIMEGROUP_NONE,
             IMUGROUP_NONE,
             GPSGROUP_NONE,
             //ATTITUDEGROUP_YPRU,
             ATTITUDEGROUP_NONE,
-	    INSGROUP_NONE,
-	    GPSGROUP_NONE);
+            INSGROUP_NONE,
+            GPSGROUP_NONE);
 //, //<-- returning yaw pitch roll uncertainties
 //            INSGROUP_INSSTATUS
 //            | INSGROUP_POSLLA
@@ -255,10 +252,10 @@ int main(int argc, char *argv[])
 //            | INSGROUP_ACCELECEF,
 //            GPSGROUP_NONE);
 
-	vs.writeAsyncDataOutputType(AsciiAsync::VNOFF);
-	vs.writeBinaryOutput1(bor);
+    vs.writeAsyncDataOutputType(AsciiAsync::VNOFF);
+    vs.writeBinaryOutput1(bor);
     /*
-	BinaryOutputRegister nor(
+    BinaryOutputRegister nor(
             ASYNCMODE_PORT1,
             4, //SensorImuRate / async_output_rate,  // update rate [ms]
              COMMONGROUP_NONE,
@@ -266,9 +263,9 @@ int main(int argc, char *argv[])
             IMUGROUP_NONE,
             GPSGROUP_NONE,
             ATTITUDEGROUP_NONE,
-	    INSGROUP_NONE,
-	    GPSGROUP_NONE);
-	*/
+        INSGROUP_NONE,
+        GPSGROUP_NONE);
+    */
 //, //<-- returning yaw pitch roll uncertainties
 
     //vs.writeBinaryOutput2(nor);
@@ -303,210 +300,238 @@ void BinaryAsyncMessageReceived(void* userData, Packet& p, size_t index)
     vn::sensors::CompositeData cd = vn::sensors::CompositeData::parse(p);
     UserData user_data = *static_cast<UserData*>(userData);
     
-    //TimeStamps
-    if(!referencetime){
-	referencetime = true;
-	refROS = ros::Time::now();
-	if(cd.hasTimeStartup()){
-		refIMU = ros::Time((double) cd.timeStartup()*1E-9);
-	}
+    const ros::Time currTime = ros::Time::now();
+    const double dataTime = cd.timeStartup();
+
+    // Set reference time and break on receipt of first message 
+    if (prevTime.nsec == 0)
+    {
+        prevTime = currTime;
+        return;
     }
 
-    //for printing
-    //fprintf(stderr, "IMU count %d has %d time %lf\n", imu_seq++, cd.hasTimeStartup(), (double)cd.timeStartup()*1E-9);
-    //if(imu_seq == 400)
-	//	imu_seq = 0;
+    const ros::Duration deltaTime = currTime - prevTime;
+
+    // Resynchronize if necessary
+    if(reSynchronize)
+    {
+        if (deltaTime.nsec >= (DATA_INTERVAL - CB_EPSILON) &&
+            deltaTime.nsec <= (DATA_INTERVAL + CB_EPSILON)) 
+        {
+            lastSyncTime = currTime;
+            dataTimeZero = dataTime;
+            reSynchronize = false;
+            isSynced = true;
+        } 
+        else 
+        {
+            isSynced = false;
+            ROS_DEBUG(  "Data not within acceptable window for synchronization. "
+                        "Difference seen: %d ",
+                        prevTime.nsec);
+        }
+    }
 
     // IMU
     sensor_msgs::Imu msgIMU;
-    //msgIMU.header.stamp = ros::Time::now();
-    msgIMU.header.stamp = refROS + (ros::Time((double) cd.timeStartup()*1E-9) - refIMU);
+    msgIMU.header.stamp = lastSyncTime + ros::Duration((dataTime-dataTimeZero)*NANOSEC_2_SEC);
     msgIMU.header.frame_id = frame_id;
 
-    if (cd.hasQuaternion() && cd.hasAngularRate() && cd.hasAcceleration())
-    {
-
-        vec4f q = cd.quaternion();
-        vec3f ar = cd.angularRate();
-        vec3f al = cd.acceleration();
-
-        if (cd.hasAttitudeUncertainty())
+    if (isSynced)
+    {    
+        if (cd.hasQuaternion() && cd.hasAngularRate() && cd.hasAcceleration())
         {
-            vec3f orientationStdDev = cd.attitudeUncertainty();
-            msgIMU.orientation_covariance[0] = orientationStdDev[2]*orientationStdDev[2]*M_PI/180; // Convert to radians pitch
-            msgIMU.orientation_covariance[4] = orientationStdDev[1]*orientationStdDev[1]*M_PI/180; // Convert to radians Roll
-            msgIMU.orientation_covariance[8] = orientationStdDev[0]*orientationStdDev[0]*M_PI/180; // Convert to radians Yaw
-        }
 
-        //Quaternion message comes in as a Yaw (z) pitch (y) Roll (x) format
-        if (tf_ned_to_enu)
-        {
-            // If we want the orientation to be based on the reference label on the imu
-            tf2::Quaternion tf2_quat(q[0],q[1],q[2],q[3]);
-            geometry_msgs::Quaternion quat_msg;
+            vec4f q = cd.quaternion();
+            vec3f ar = cd.angularRate();
+            vec3f al = cd.acceleration();
 
-            if(frame_based_enu)
+            if (cd.hasAttitudeUncertainty())
             {
-                // Create a rotation from NED -> ENU
-                tf2::Quaternion q_rotate;
-                q_rotate.setRPY (M_PI, 0.0, M_PI/2);
-                // Apply the NED to ENU rotation such that the coordinate frame matches
-                tf2_quat = q_rotate*tf2_quat;
-                quat_msg = tf2::toMsg(tf2_quat);
+                vec3f orientationStdDev = cd.attitudeUncertainty();
+                msgIMU.orientation_covariance[0] = orientationStdDev[2]*orientationStdDev[2]*M_PI/180; // Convert to radians pitch
+                msgIMU.orientation_covariance[4] = orientationStdDev[1]*orientationStdDev[1]*M_PI/180; // Convert to radians Roll
+                msgIMU.orientation_covariance[8] = orientationStdDev[0]*orientationStdDev[0]*M_PI/180; // Convert to radians Yaw
+            }
 
-                // Since everything is in the normal frame, no flipping required
+            //Quaternion message comes in as a Yaw (z) pitch (y) Roll (x) format
+            if (tf_ned_to_enu)
+            {
+                // If we want the orientation to be based on the reference label on the imu
+                tf2::Quaternion tf2_quat(q[0],q[1],q[2],q[3]);
+                geometry_msgs::Quaternion quat_msg;
+
+                if(frame_based_enu)
+                {
+                    // Create a rotation from NED -> ENU
+                    tf2::Quaternion q_rotate;
+                    q_rotate.setRPY (M_PI, 0.0, M_PI/2);
+                    // Apply the NED to ENU rotation such that the coordinate frame matches
+                    tf2_quat = q_rotate*tf2_quat;
+                    quat_msg = tf2::toMsg(tf2_quat);
+
+                    // Since everything is in the normal frame, no flipping required
+                    msgIMU.angular_velocity.x = ar[0];
+                    msgIMU.angular_velocity.y = ar[1];
+                    msgIMU.angular_velocity.z = ar[2];
+
+                    msgIMU.linear_acceleration.x = al[0];
+                    msgIMU.linear_acceleration.y = al[1];
+                    msgIMU.linear_acceleration.z = al[2];
+                }
+                else
+                {
+                    // put into ENU - swap X/Y, invert Z
+                    quat_msg.x = q[1];
+                    quat_msg.y = q[0];
+                    quat_msg.z = -q[2];
+                    quat_msg.w = q[3];
+
+                    // Flip x and y then invert z
+                    msgIMU.angular_velocity.x = ar[1];
+                    msgIMU.angular_velocity.y = ar[0];
+                    msgIMU.angular_velocity.z = -ar[2];
+                    // Flip x and y then invert z
+                    msgIMU.linear_acceleration.x = al[1];
+                    msgIMU.linear_acceleration.y = al[0];
+                    msgIMU.linear_acceleration.z = -al[2];
+
+                    if (cd.hasAttitudeUncertainty())
+                    {
+                        vec3f orientationStdDev = cd.attitudeUncertainty();
+                        msgIMU.orientation_covariance[0] = orientationStdDev[1]*orientationStdDev[1]*M_PI/180; // Convert to radians pitch
+                        msgIMU.orientation_covariance[4] = orientationStdDev[0]*orientationStdDev[0]*M_PI/180; // Convert to radians Roll
+                        msgIMU.orientation_covariance[8] = orientationStdDev[2]*orientationStdDev[2]*M_PI/180; // Convert to radians Yaw
+                    }
+                }
+
+            msgIMU.orientation = quat_msg;
+            }
+            else
+            {
+                msgIMU.orientation.x = q[0];
+                msgIMU.orientation.y = q[1];
+                msgIMU.orientation.z = q[2];
+                msgIMU.orientation.w = q[3];
+
                 msgIMU.angular_velocity.x = ar[0];
                 msgIMU.angular_velocity.y = ar[1];
                 msgIMU.angular_velocity.z = ar[2];
-
                 msgIMU.linear_acceleration.x = al[0];
                 msgIMU.linear_acceleration.y = al[1];
                 msgIMU.linear_acceleration.z = al[2];
             }
-            else
+            // Covariances pulled from parameters
+            msgIMU.angular_velocity_covariance = angular_vel_covariance;
+            msgIMU.linear_acceleration_covariance = linear_accel_covariance;
+            pubIMU.publish(msgIMU);
+        }
+
+        // Magnetic Field
+        if (cd.hasMagnetic())
+        {
+            vec3f mag = cd.magnetic();
+            sensor_msgs::MagneticField msgMag;
+            msgMag.header.stamp = msgIMU.header.stamp;
+            msgMag.header.frame_id = msgIMU.header.frame_id;
+            msgMag.magnetic_field.x = mag[0];
+            msgMag.magnetic_field.y = mag[1];
+            msgMag.magnetic_field.z = mag[2];
+            pubMag.publish(msgMag);
+        }
+
+        // GPS
+        if (user_data.device_family != VnSensor::Family::VnSensor_Family_Vn100)
+        {
+            vec3d lla = cd.positionEstimatedLla();
+
+            sensor_msgs::NavSatFix msgGPS;
+            msgGPS.header.stamp = msgIMU.header.stamp;
+            msgGPS.header.frame_id = msgIMU.header.frame_id;
+            msgGPS.latitude = lla[0];
+            msgGPS.longitude = lla[1];
+            msgGPS.altitude = lla[2];
+            pubGPS.publish(msgGPS);
+
+            // Odometry
+            if (pubOdom.getNumSubscribers() > 0)
             {
-                // put into ENU - swap X/Y, invert Z
-                quat_msg.x = q[1];
-                quat_msg.y = q[0];
-                quat_msg.z = -q[2];
-                quat_msg.w = q[3];
+                nav_msgs::Odometry msgOdom;
+                msgOdom.header.stamp = msgIMU.header.stamp;
+                msgOdom.header.frame_id = msgIMU.header.frame_id;
+                vec3d pos = cd.positionEstimatedEcef();
 
-                // Flip x and y then invert z
-                msgIMU.angular_velocity.x = ar[1];
-                msgIMU.angular_velocity.y = ar[0];
-                msgIMU.angular_velocity.z = -ar[2];
-                // Flip x and y then invert z
-                msgIMU.linear_acceleration.x = al[1];
-                msgIMU.linear_acceleration.y = al[0];
-                msgIMU.linear_acceleration.z = -al[2];
-
-                if (cd.hasAttitudeUncertainty())
+                if (!initial_position_set)
                 {
-                    vec3f orientationStdDev = cd.attitudeUncertainty();
-                    msgIMU.orientation_covariance[0] = orientationStdDev[1]*orientationStdDev[1]*M_PI/180; // Convert to radians pitch
-                    msgIMU.orientation_covariance[4] = orientationStdDev[0]*orientationStdDev[0]*M_PI/180; // Convert to radians Roll
-                    msgIMU.orientation_covariance[8] = orientationStdDev[2]*orientationStdDev[2]*M_PI/180; // Convert to radians Yaw
+                    initial_position_set = true;
+                    initial_position.x = pos[0];
+                    initial_position.y = pos[1];
+                    initial_position.z = pos[2];
                 }
-            }
 
-          msgIMU.orientation = quat_msg;
+                msgOdom.pose.pose.position.x = pos[0] - initial_position[0];
+                msgOdom.pose.pose.position.y = pos[1] - initial_position[1];
+                msgOdom.pose.pose.position.z = pos[2] - initial_position[2];
+
+                if (cd.hasQuaternion())
+                {
+                    vec4f q = cd.quaternion();
+
+                    msgOdom.pose.pose.orientation.x = q[0];
+                    msgOdom.pose.pose.orientation.y = q[1];
+                    msgOdom.pose.pose.orientation.z = q[2];
+                    msgOdom.pose.pose.orientation.w = q[3];
+                }
+                if (cd.hasVelocityEstimatedBody())
+                {
+                    vec3f vel = cd.velocityEstimatedBody();
+
+                    msgOdom.twist.twist.linear.x = vel[0];
+                    msgOdom.twist.twist.linear.y = vel[1];
+                    msgOdom.twist.twist.linear.z = vel[2];
+                }
+                if (cd.hasAngularRate())
+                {
+                    vec3f ar = cd.angularRate();
+
+                    msgOdom.twist.twist.angular.x = ar[0];
+                    msgOdom.twist.twist.angular.y = ar[1];
+                    msgOdom.twist.twist.angular.z = ar[2];
+                }
+                pubOdom.publish(msgOdom);
+            }
         }
-        else
+
+        // Temperature
+        if (cd.hasTemperature())
         {
-            msgIMU.orientation.x = q[0];
-            msgIMU.orientation.y = q[1];
-            msgIMU.orientation.z = q[2];
-            msgIMU.orientation.w = q[3];
+            float temp = cd.temperature();
 
-            msgIMU.angular_velocity.x = ar[0];
-            msgIMU.angular_velocity.y = ar[1];
-            msgIMU.angular_velocity.z = ar[2];
-            msgIMU.linear_acceleration.x = al[0];
-            msgIMU.linear_acceleration.y = al[1];
-            msgIMU.linear_acceleration.z = al[2];
+            sensor_msgs::Temperature msgTemp;
+            msgTemp.header.stamp = msgIMU.header.stamp;
+            msgTemp.header.frame_id = msgIMU.header.frame_id;
+            msgTemp.temperature = temp;
+            pubTemp.publish(msgTemp);
         }
-        // Covariances pulled from parameters
-        msgIMU.angular_velocity_covariance = angular_vel_covariance;
-        msgIMU.linear_acceleration_covariance = linear_accel_covariance;
-        pubIMU.publish(msgIMU);
-    }
 
-    // Magnetic Field
-    if (cd.hasMagnetic())
-    {
-        vec3f mag = cd.magnetic();
-        sensor_msgs::MagneticField msgMag;
-        msgMag.header.stamp = msgIMU.header.stamp;
-        msgMag.header.frame_id = msgIMU.header.frame_id;
-        msgMag.magnetic_field.x = mag[0];
-        msgMag.magnetic_field.y = mag[1];
-        msgMag.magnetic_field.z = mag[2];
-        pubMag.publish(msgMag);
-    }
-
-    // GPS
-    if (user_data.device_family != VnSensor::Family::VnSensor_Family_Vn100)
-    {
-        vec3d lla = cd.positionEstimatedLla();
-
-        sensor_msgs::NavSatFix msgGPS;
-        msgGPS.header.stamp = msgIMU.header.stamp;
-        msgGPS.header.frame_id = msgIMU.header.frame_id;
-        msgGPS.latitude = lla[0];
-        msgGPS.longitude = lla[1];
-        msgGPS.altitude = lla[2];
-        pubGPS.publish(msgGPS);
-
-        // Odometry
-        if (pubOdom.getNumSubscribers() > 0)
+        // Barometer
+        if (cd.hasPressure())
         {
-            nav_msgs::Odometry msgOdom;
-            msgOdom.header.stamp = msgIMU.header.stamp;
-            msgOdom.header.frame_id = msgIMU.header.frame_id;
-            vec3d pos = cd.positionEstimatedEcef();
+            float pres = cd.pressure();
 
-            if (!initial_position_set)
-            {
-                initial_position_set = true;
-                initial_position.x = pos[0];
-                initial_position.y = pos[1];
-                initial_position.z = pos[2];
-            }
-
-            msgOdom.pose.pose.position.x = pos[0] - initial_position[0];
-            msgOdom.pose.pose.position.y = pos[1] - initial_position[1];
-            msgOdom.pose.pose.position.z = pos[2] - initial_position[2];
-
-            if (cd.hasQuaternion())
-            {
-                vec4f q = cd.quaternion();
-
-                msgOdom.pose.pose.orientation.x = q[0];
-                msgOdom.pose.pose.orientation.y = q[1];
-                msgOdom.pose.pose.orientation.z = q[2];
-                msgOdom.pose.pose.orientation.w = q[3];
-            }
-            if (cd.hasVelocityEstimatedBody())
-            {
-                vec3f vel = cd.velocityEstimatedBody();
-
-                msgOdom.twist.twist.linear.x = vel[0];
-                msgOdom.twist.twist.linear.y = vel[1];
-                msgOdom.twist.twist.linear.z = vel[2];
-            }
-            if (cd.hasAngularRate())
-            {
-                vec3f ar = cd.angularRate();
-
-                msgOdom.twist.twist.angular.x = ar[0];
-                msgOdom.twist.twist.angular.y = ar[1];
-                msgOdom.twist.twist.angular.z = ar[2];
-            }
-            pubOdom.publish(msgOdom);
+            sensor_msgs::FluidPressure msgPres;
+            msgPres.header.stamp = msgIMU.header.stamp;
+            msgPres.header.frame_id = msgIMU.header.frame_id;
+            msgPres.fluid_pressure = pres;
+            pubPres.publish(msgPres);
         }
     }
-
-    // Temperature
-    if (cd.hasTemperature())
+    
+    // Resynchronization check 
+    const ros::Duration lastSyncDelta = currTime - lastSyncTime;
+    if ((lastSyncTime.sec > 0) && (lastSyncDelta.sec >= RESYNC_INTERVAL)) 
     {
-        float temp = cd.temperature();
-
-        sensor_msgs::Temperature msgTemp;
-        msgTemp.header.stamp = msgIMU.header.stamp;
-        msgTemp.header.frame_id = msgIMU.header.frame_id;
-        msgTemp.temperature = temp;
-        pubTemp.publish(msgTemp);
-    }
-
-    // Barometer
-    if (cd.hasPressure())
-    {
-        float pres = cd.pressure();
-
-        sensor_msgs::FluidPressure msgPres;
-        msgPres.header.stamp = msgIMU.header.stamp;
-        msgPres.header.frame_id = msgIMU.header.frame_id;
-        msgPres.fluid_pressure = pres;
-        pubPres.publish(msgPres);
+        reSynchronize = true;
+        ROS_INFO("Re-Sync");
     }
 }
