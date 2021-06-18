@@ -324,8 +324,6 @@ void BinaryAsyncMessageReceived(void* userData, Packet& p, size_t index)
             dataTimeZero = dataTime;
             reSynchronize = false;
             isSynced = true;
-            ROS_INFO_STREAM("Frame count out of sync: " << nonSyncCount);
-            nonSyncCount = 0;
         } 
         else 
         {
@@ -333,7 +331,6 @@ void BinaryAsyncMessageReceived(void* userData, Packet& p, size_t index)
             ROS_DEBUG(  "Data not within acceptable window for synchronization. "
                         "Difference seen: %d ",
                         prevTime.nsec);
-            ++nonSyncCount;
         }
     }
 
