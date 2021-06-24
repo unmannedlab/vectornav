@@ -23,41 +23,44 @@
  *
  */
 
-#include <iostream>
 #include <cmath>
+#include <iostream>
 #include <vector>
+
 // No need to define PI twice if we already have it included...
 //#define M_PI 3.14159265358979323846  /* M_PI */
 
 // ROS Libraries
+#include "nav_msgs/Odometry.h"
 #include "ros/ros.h"
+#include "sensor_msgs/FluidPressure.h"
 #include "sensor_msgs/Imu.h"
 #include "sensor_msgs/MagneticField.h"
 #include "sensor_msgs/NavSatFix.h"
-#include "nav_msgs/Odometry.h"
 #include "sensor_msgs/Temperature.h"
-#include "sensor_msgs/FluidPressure.h"
 #include "std_srvs/Empty.h"
+
 #include <tf2/LinearMath/Transform.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
 
 ros::Publisher pubIMU, pubMag, pubGPS, pubOdom, pubTemp, pubPres;
 ros::ServiceServer resetOdomSrv;
 
-//Unused covariances initilized to zero's
-boost::array<double, 9ul> linear_accel_covariance = { };
-boost::array<double, 9ul> angular_vel_covariance = { };
-boost::array<double, 9ul> orientation_covariance = { };
+// Unused covariances initilized to zero's
+boost::array<double, 9ul> linear_accel_covariance = {};
+boost::array<double, 9ul> angular_vel_covariance  = {};
+boost::array<double, 9ul> orientation_covariance  = {};
 XmlRpc::XmlRpcValue rpc_temp;
 
 // Custom user data to pass to packet callback function
-struct UserData {
+struct UserData
+{
     int device_family;
 };
 
 // Include this header file to get access to VectorNav sensors.
-#include "vn/sensors.h"
 #include "vn/compositedata.h"
+#include "vn/sensors.h"
 #include "vn/util.h"
 
 using namespace std;
@@ -67,7 +70,7 @@ using namespace vn::protocol::uart;
 using namespace vn::xplat;
 
 // Method declarations for future use.
-void BinaryAsyncMessageReceived(void* userData, Packet& p, size_t index);
+void BinaryAsyncMessageReceived(void *userData, Packet &p, size_t index);
 
 std::string frame_id;
 // Boolean to use ned or enu frame. Defaults to enu which is data format from sensor.
@@ -81,28 +84,29 @@ ros::Time prevTime {0};
 double dataTimeZero {0.0};
 int nonSyncCount {0};
 
-int CB_EPSILON {500000}; // 0.5 milli-second 
-constexpr double IMU_RATE {200}; // hz 
-constexpr double SEC_2_NANOSEC {1E9}; // Seconds to Nanoseconds
-constexpr double NANOSEC_2_SEC {1E-9}; // Nanoseconds to Seconds
+int CB_EPSILON {500000};                  // 0.5 milli-second
+constexpr double IMU_RATE {200};          // hz
+constexpr double SEC_2_NANOSEC {1E9};     // Seconds to Nanoseconds
+constexpr double NANOSEC_2_SEC {1E-9};    // Nanoseconds to Seconds
 
-constexpr int32_t RESYNC_INTERVAL {5}; // Seconds
-constexpr int32_t DATA_INTERVAL { static_cast<int32_t>(SEC_2_NANOSEC / IMU_RATE)}; // Nanoseconds
-
+constexpr int32_t RESYNC_INTERVAL {5};                                               // Seconds
+constexpr int32_t DATA_INTERVAL {static_cast<int32_t>(SEC_2_NANOSEC / IMU_RATE)};    // Nanoseconds
 
 // Initial position after getting a GPS fix.
 vec3d initial_position;
 bool initial_position_set = false;
 
 // Basic loop so we can initilize our covariance parameters above
-boost::array<double, 9ul> setCov(XmlRpc::XmlRpcValue rpc){
+boost::array<double, 9ul> setCov(XmlRpc::XmlRpcValue rpc)
+{
     // Output covariance vector
-    boost::array<double, 9ul> output = { 0.0 };
+    boost::array<double, 9ul> output = {0.0};
 
     // Convert the RPC message to array
     ROS_ASSERT(rpc.getType() == XmlRpc::XmlRpcValue::TypeArray);
 
-    for(int i = 0; i < 9; i++){
+    for (int i = 0; i < 9; i++)
+    {
         ROS_ASSERT(rpc[i].getType() == XmlRpc::XmlRpcValue::TypeDouble);
         output[i] = (double)rpc[i];
     }
@@ -118,15 +122,14 @@ bool resetOdom(std_srvs::Empty::Request &req, std_srvs::Empty::Response &resp)
 
 int main(int argc, char *argv[])
 {
-
     // ROS node init
     ros::init(argc, argv, "vectornav");
     ros::NodeHandle n;
     ros::NodeHandle pn("~");
 
-    pubIMU = n.advertise<sensor_msgs::Imu>("vectornav/IMU", 1000);
-    pubMag = n.advertise<sensor_msgs::MagneticField>("vectornav/Mag", 1000);
-    pubGPS = n.advertise<sensor_msgs::NavSatFix>("vectornav/GPS", 1000);
+    pubIMU  = n.advertise<sensor_msgs::Imu>("vectornav/IMU", 1000);
+    pubMag  = n.advertise<sensor_msgs::MagneticField>("vectornav/Mag", 1000);
+    pubGPS  = n.advertise<sensor_msgs::NavSatFix>("vectornav/GPS", 1000);
     pubOdom = n.advertise<nav_msgs::Odometry>("vectornav/Odom", 1000);
     pubTemp = n.advertise<sensor_msgs::Temperature>("vectornav/Temp", 1000);
     pubPres = n.advertise<sensor_msgs::FluidPressure>("vectornav/Pres", 1000);
@@ -150,16 +153,16 @@ int main(int argc, char *argv[])
     pn.param<int>("serial_baud", SensorBaudrate, 115200);
     pn.param<int>("fixed_imu_rate", SensorImuRate, 800);
 
-    //Call to set covariances
-    if(pn.getParam("linear_accel_covariance",rpc_temp))
+    // Call to set covariances
+    if (pn.getParam("linear_accel_covariance", rpc_temp))
     {
         linear_accel_covariance = setCov(rpc_temp);
     }
-    if(pn.getParam("angular_vel_covariance",rpc_temp))
+    if (pn.getParam("angular_vel_covariance", rpc_temp))
     {
         angular_vel_covariance = setCov(rpc_temp);
     }
-    if(pn.getParam("orientation_covariance",rpc_temp))
+    if (pn.getParam("orientation_covariance", rpc_temp))
     {
         orientation_covariance = setCov(rpc_temp);
     }
@@ -170,34 +173,36 @@ int main(int argc, char *argv[])
     VnSensor vs;
 
     // Run through all of the acceptable baud rates until we are connected
-    for(uint8_t i = 0; i < vs.supportedBaudrates().size(); ++i)
+    for (uint8_t i = 0; i < vs.supportedBaudrates().size(); ++i)
     {
         // Default baudrate variable
         int defaultBaudrate = vs.supportedBaudrates()[i];
         ROS_INFO("Connecting with default at %d", defaultBaudrate);
         // Default response was too low and retransmit time was too long by default.
         // They would cause errors
-        vs.setResponseTimeoutMs(1000); // Wait for up to 1000 ms for response
-        vs.setRetransmitDelayMs(50);  // Retransmit every 50 ms
+        vs.setResponseTimeoutMs(1000);    // Wait for up to 1000 ms for response
+        vs.setRetransmitDelayMs(50);      // Retransmit every 50 ms
 
         // Acceptable baud rates 9600, 19200, 38400, 57600, 128000, 115200, 230400, 460800, 921600
         // Data sheet says 128000 is a valid baud rate. It doesn't work with the VN100 so it is excluded.
         // All other values seem to work fine.
-        try{
+        try
+        {
             // Connect to sensor at it's default rate
-            if(defaultBaudrate != 128000 && SensorBaudrate != 128000)
+            if (defaultBaudrate != 128000 && SensorBaudrate != 128000)
             {
                 vs.connect(SensorPort, defaultBaudrate);
                 // Issues a change baudrate to the VectorNav sensor and then
                 // reconnects the attached serial port at the new baudrate.
                 vs.changeBaudRate(SensorBaudrate);
                 // Only makes it here once we have the default correct
-                ROS_INFO("Connected baud rate is %d",vs.baudrate());
+                ROS_INFO("Connected baud rate is %d", vs.baudrate());
                 break;
             }
         }
         // Catch all oddities
-        catch(...){
+        catch (...)
+        {
             // Disconnect if we had the wrong default and we were connected
             vs.disconnect();
             ros::Duration(0.2).sleep();
@@ -205,18 +210,20 @@ int main(int argc, char *argv[])
     }
 
     // Now we verify connection (Should be good if we made it this far)
-    if(vs.verifySensorConnectivity())
+    if (vs.verifySensorConnectivity())
     {
         ROS_INFO("Device connection established");
-    }else{
+    }
+    else
+    {
         ROS_ERROR("No device communication");
         ROS_WARN("Please input a valid baud rate. Valid are:");
         ROS_WARN("9600, 19200, 38400, 57600, 115200, 128000, 230400, 460800, 921600");
         ROS_WARN("With the test IMU 128000 did not work, all others worked fine.");
     }
     // Query the sensor's model number.
-    string mn = vs.readModelNumber();
-    string fv = vs.readFirmwareVersion();
+    string mn   = vs.readModelNumber();
+    string fv   = vs.readFirmwareVersion();
     uint32_t hv = vs.readHardwareRevision();
     uint32_t sn = vs.readSerialNumber();
     ROS_INFO("Model Number: %s, Firmware Version: %s", mn.c_str(), fv.c_str());
@@ -227,31 +234,24 @@ int main(int argc, char *argv[])
     user_data.device_family = vs.determineDeviceFamily();
 
     // Set Data output Freq [Hz]
-    //vs.writeAsyncDataOutputFrequency(async_output_rate);
+    // vs.writeAsyncDataOutputFrequency(async_output_rate);
     // Configure binary output message
-    BinaryOutputRegister bor(
-            ASYNCMODE_PORT1,
-            2, //SensorImuRate / async_output_rate,  // update rate [ms]
-            COMMONGROUP_QUATERNION
-            | COMMONGROUP_ANGULARRATE
-            //| COMMONGROUP_POSITION
-            | COMMONGROUP_ACCEL
-            | COMMONGROUP_TIMESTARTUP
-            | COMMONGROUP_MAGPRES,
-            TIMEGROUP_NONE,
-            IMUGROUP_NONE,
-            GPSGROUP_NONE,
-            //ATTITUDEGROUP_YPRU,
-            ATTITUDEGROUP_NONE,
-            INSGROUP_NONE,
-            GPSGROUP_NONE);
-//, //<-- returning yaw pitch roll uncertainties
-//            INSGROUP_INSSTATUS
-//            | INSGROUP_POSLLA
-//            | INSGROUP_POSECEF
-//            | INSGROUP_VELBODY
-//            | INSGROUP_ACCELECEF,
-//            GPSGROUP_NONE);
+    BinaryOutputRegister bor(ASYNCMODE_PORT1,
+                             2,    // SensorImuRate / async_output_rate,  // update rate [ms]
+                             COMMONGROUP_QUATERNION
+                                 | COMMONGROUP_ANGULARRATE
+                                 //| COMMONGROUP_POSITION
+                                 | COMMONGROUP_ACCEL | COMMONGROUP_TIMESTARTUP | COMMONGROUP_MAGPRES,
+                             TIMEGROUP_NONE, IMUGROUP_NONE, GPSGROUP_NONE,
+                             // ATTITUDEGROUP_YPRU,
+                             ATTITUDEGROUP_NONE, INSGROUP_NONE, GPSGROUP_NONE);
+    //, //<-- returning yaw pitch roll uncertainties
+    //            INSGROUP_INSSTATUS
+    //            | INSGROUP_POSLLA
+    //            | INSGROUP_POSECEF
+    //            | INSGROUP_VELBODY
+    //            | INSGROUP_ACCELECEF,
+    //            GPSGROUP_NONE);
 
     vs.writeAsyncDataOutputType(AsciiAsync::VNOFF);
     vs.writeBinaryOutput1(bor);
@@ -267,12 +267,12 @@ int main(int argc, char *argv[])
         INSGROUP_NONE,
         GPSGROUP_NONE);
     */
-//, //<-- returning yaw pitch roll uncertainties
+    //, //<-- returning yaw pitch roll uncertainties
 
-    //vs.writeBinaryOutput2(nor);
-    //vs.writeBinaryOutput3(nor);
+    // vs.writeBinaryOutput2(nor);
+    // vs.writeBinaryOutput3(nor);
     // Set Data output Freq [Hz]
-    //vs.writeAsyncDataOutputFrequency(async_output_rate);
+    // vs.writeAsyncDataOutputFrequency(async_output_rate);
     vs.registerAsyncPacketReceivedHandler(&user_data, BinaryAsyncMessageReceived);
 
     // You spin me right round, baby
@@ -280,98 +280,110 @@ int main(int argc, char *argv[])
     // Right round round round
     while (ros::ok())
     {
-        ros::spin(); // Need to make sure we disconnect properly. Check if all ok.
+        ros::spin();    // Need to make sure we disconnect properly. Check if all ok.
     }
 
     // Node has been terminated
     vs.unregisterAsyncPacketReceivedHandler();
     ros::Duration(0.5).sleep();
-    ROS_INFO ("Unregisted the Packet Received Handler");
+    ROS_INFO("Unregisted the Packet Received Handler");
     vs.disconnect();
     ros::Duration(0.5).sleep();
-    ROS_INFO ("%s is disconnected successfully", mn.c_str());
+    ROS_INFO("%s is disconnected successfully", mn.c_str());
     return 0;
+}
+
+ros::Time EstimateSensorTime(const ros::Time sensorTime, const ros::Time computerTime)
+{
+    // EstimateSensorTime
+    // 1-D Kalman filter for time synchronization
+    // Measurement model: Time_computer = (Time_sensor * alpha + beta)
+
+    // Initial Parameters
+    static bool initialize = true;
+    static double alpha    = 1.0;
+    static double beta     = 0.0;
+    static double aCov     = 2.68318E-06;    // Estimate from 1D analysis
+    static double bCov     = 6.89055E-04;    // Estimate from 1D analysis
+    static double R        = 1.00000E-06;    // Estimate from 1D analysis
+
+    const double Ts = static_cast<double>(sensorTime.toSec());
+    const double Tc = static_cast<double>(computerTime.toSec());
+
+    if (initialize)
+    {
+        beta       = Tc - Ts;
+        initialize = false;
+        return computerTime;
+    }
+    else
+    {
+        // KF intermediate values
+        const double S = (aCov * Ts * Ts + R + bCov);
+
+        // KF State Update
+        alpha = alpha - (Ts * aCov * (beta - Tc + Ts * alpha)) / S;
+        beta  = beta - (bCov * (beta - Tc + Ts * alpha)) / S;
+
+        // KF Covariance Update
+        aCov = -aCov * ((Ts * Ts * aCov) / S - 1);
+        bCov = -bCov * (bCov / S - 1);
+
+        return ros::Time(alpha * Ts + beta);
+    }
 }
 
 //
 // Callback function to process data packet from sensor
 //
-void BinaryAsyncMessageReceived(void* userData, Packet& p, size_t index)
+void BinaryAsyncMessageReceived(void *userData, Packet &p, size_t index)
 {
     vn::sensors::CompositeData cd = vn::sensors::CompositeData::parse(p);
-    UserData user_data = *static_cast<UserData*>(userData);
-    
+    UserData user_data            = *static_cast<UserData *>(userData);
+
     const ros::Time currTime = ros::Time::now();
-    const double dataTime = cd.timeStartup();
+    const ros::Time dataTime = ros::Time(cd.timeStartup() * NANOSEC_2_SEC);
 
-    // Set reference time and break on receipt of first message 
-    if (prevTime.nsec == 0)
-    {
-        prevTime = currTime;
-        return;
-    }
-
-    const ros::Duration deltaTime = currTime - prevTime;
-
-    // Resynchronize if necessary
-    if(reSynchronize)
-    {
-        // Check if CPU delta time is within bounds of data interval
-        if (deltaTime.nsec >= (DATA_INTERVAL - CB_EPSILON) &&
-            deltaTime.nsec <= (DATA_INTERVAL + CB_EPSILON)) 
-        {
-            lastSyncTime = currTime;
-            dataTimeZero = dataTime;
-            reSynchronize = false;
-            isSynced = true;
-        } 
-        else 
-        {
-            isSynced = false;
-            ROS_DEBUG(  "Data not within acceptable window for synchronization. "
-                        "Difference seen: %d ",
-                        prevTime.nsec);
-        }
-    }
-
-    // IMU
+    // IMU Message
     sensor_msgs::Imu msgIMU;
-    msgIMU.header.stamp = lastSyncTime + ros::Duration((dataTime-dataTimeZero)*NANOSEC_2_SEC);
+    // msgIMU.header.stamp = currTime;
+    msgIMU.header.stamp    = EstimateSensorTime(dataTime, currTime);
     msgIMU.header.frame_id = frame_id;
 
     // Don't publish data unless synchronized
-    if (isSynced)
-    {   
- 
+    if (true)
+    {
         if (cd.hasQuaternion() && cd.hasAngularRate() && cd.hasAcceleration())
         {
-
-            vec4f q = cd.quaternion();
+            vec4f q  = cd.quaternion();
             vec3f ar = cd.angularRate();
             vec3f al = cd.acceleration();
 
             if (cd.hasAttitudeUncertainty())
             {
                 vec3f orientationStdDev = cd.attitudeUncertainty();
-                msgIMU.orientation_covariance[0] = orientationStdDev[2]*orientationStdDev[2]*M_PI/180; // Convert to radians pitch
-                msgIMU.orientation_covariance[4] = orientationStdDev[1]*orientationStdDev[1]*M_PI/180; // Convert to radians Roll
-                msgIMU.orientation_covariance[8] = orientationStdDev[0]*orientationStdDev[0]*M_PI/180; // Convert to radians Yaw
+                msgIMU.orientation_covariance[0]
+                    = orientationStdDev[2] * orientationStdDev[2] * M_PI / 180;    // Convert to radians pitch
+                msgIMU.orientation_covariance[4]
+                    = orientationStdDev[1] * orientationStdDev[1] * M_PI / 180;    // Convert to radians Roll
+                msgIMU.orientation_covariance[8]
+                    = orientationStdDev[0] * orientationStdDev[0] * M_PI / 180;    // Convert to radians Yaw
             }
 
-            //Quaternion message comes in as a Yaw (z) pitch (y) Roll (x) format
+            // Quaternion message comes in as a Yaw (z) pitch (y) Roll (x) format
             if (tf_ned_to_enu)
             {
                 // If we want the orientation to be based on the reference label on the imu
-                tf2::Quaternion tf2_quat(q[0],q[1],q[2],q[3]);
+                tf2::Quaternion tf2_quat(q[0], q[1], q[2], q[3]);
                 geometry_msgs::Quaternion quat_msg;
 
-                if(frame_based_enu)
+                if (frame_based_enu)
                 {
                     // Create a rotation from NED -> ENU
                     tf2::Quaternion q_rotate;
-                    q_rotate.setRPY (M_PI, 0.0, M_PI/2);
+                    q_rotate.setRPY(M_PI, 0.0, M_PI / 2);
                     // Apply the NED to ENU rotation such that the coordinate frame matches
-                    tf2_quat = q_rotate*tf2_quat;
+                    tf2_quat = q_rotate * tf2_quat;
                     quat_msg = tf2::toMsg(tf2_quat);
 
                     // Since everything is in the normal frame, no flipping required
@@ -403,13 +415,16 @@ void BinaryAsyncMessageReceived(void* userData, Packet& p, size_t index)
                     if (cd.hasAttitudeUncertainty())
                     {
                         vec3f orientationStdDev = cd.attitudeUncertainty();
-                        msgIMU.orientation_covariance[0] = orientationStdDev[1]*orientationStdDev[1]*M_PI/180; // Convert to radians pitch
-                        msgIMU.orientation_covariance[4] = orientationStdDev[0]*orientationStdDev[0]*M_PI/180; // Convert to radians Roll
-                        msgIMU.orientation_covariance[8] = orientationStdDev[2]*orientationStdDev[2]*M_PI/180; // Convert to radians Yaw
+                        msgIMU.orientation_covariance[0]
+                            = orientationStdDev[1] * orientationStdDev[1] * M_PI / 180;    // Convert to radians pitch
+                        msgIMU.orientation_covariance[4]
+                            = orientationStdDev[0] * orientationStdDev[0] * M_PI / 180;    // Convert to radians Roll
+                        msgIMU.orientation_covariance[8]
+                            = orientationStdDev[2] * orientationStdDev[2] * M_PI / 180;    // Convert to radians Yaw
                     }
                 }
 
-            msgIMU.orientation = quat_msg;
+                msgIMU.orientation = quat_msg;
             }
             else
             {
@@ -418,15 +433,15 @@ void BinaryAsyncMessageReceived(void* userData, Packet& p, size_t index)
                 msgIMU.orientation.z = q[2];
                 msgIMU.orientation.w = q[3];
 
-                msgIMU.angular_velocity.x = ar[0];
-                msgIMU.angular_velocity.y = ar[1];
-                msgIMU.angular_velocity.z = ar[2];
+                msgIMU.angular_velocity.x    = ar[0];
+                msgIMU.angular_velocity.y    = ar[1];
+                msgIMU.angular_velocity.z    = ar[2];
                 msgIMU.linear_acceleration.x = al[0];
                 msgIMU.linear_acceleration.y = al[1];
                 msgIMU.linear_acceleration.z = al[2];
             }
             // Covariances pulled from parameters
-            msgIMU.angular_velocity_covariance = angular_vel_covariance;
+            msgIMU.angular_velocity_covariance    = angular_vel_covariance;
             msgIMU.linear_acceleration_covariance = linear_accel_covariance;
             pubIMU.publish(msgIMU);
         }
@@ -436,14 +451,14 @@ void BinaryAsyncMessageReceived(void* userData, Packet& p, size_t index)
         {
             vec3f mag = cd.magnetic();
             sensor_msgs::MagneticField msgMag;
-            msgMag.header.stamp = msgIMU.header.stamp;
-            msgMag.header.frame_id = msgIMU.header.frame_id;
+            msgMag.header.stamp     = msgIMU.header.stamp;
+            msgMag.header.frame_id  = msgIMU.header.frame_id;
             msgMag.magnetic_field.x = mag[0];
             msgMag.magnetic_field.y = mag[1];
             msgMag.magnetic_field.z = mag[2];
             pubMag.publish(msgMag);
         }
-        
+
         // GPS
         if (user_data.device_family != VnSensor::Family::VnSensor_Family_Vn100)
         {
@@ -452,27 +467,27 @@ void BinaryAsyncMessageReceived(void* userData, Packet& p, size_t index)
                 vec3d lla = cd.positionEstimatedLla();
 
                 sensor_msgs::NavSatFix msgGPS;
-                msgGPS.header.stamp = msgIMU.header.stamp;
+                msgGPS.header.stamp    = msgIMU.header.stamp;
                 msgGPS.header.frame_id = msgIMU.header.frame_id;
-                msgGPS.latitude = lla[0];
-                msgGPS.longitude = lla[1];
-                msgGPS.altitude = lla[2];
+                msgGPS.latitude        = lla[0];
+                msgGPS.longitude       = lla[1];
+                msgGPS.altitude        = lla[2];
                 pubGPS.publish(msgGPS);
 
                 // Odometry
                 if (pubOdom.getNumSubscribers() > 0)
                 {
                     nav_msgs::Odometry msgOdom;
-                    msgOdom.header.stamp = msgIMU.header.stamp;
+                    msgOdom.header.stamp    = msgIMU.header.stamp;
                     msgOdom.header.frame_id = msgIMU.header.frame_id;
-                    vec3d pos = cd.positionEstimatedEcef();
+                    vec3d pos               = cd.positionEstimatedEcef();
 
                     if (!initial_position_set)
                     {
                         initial_position_set = true;
-                        initial_position.x = pos[0];
-                        initial_position.y = pos[1];
-                        initial_position.z = pos[2];
+                        initial_position.x   = pos[0];
+                        initial_position.y   = pos[1];
+                        initial_position.z   = pos[2];
                     }
 
                     msgOdom.pose.pose.position.x = pos[0] - initial_position[0];
@@ -515,9 +530,9 @@ void BinaryAsyncMessageReceived(void* userData, Packet& p, size_t index)
             float temp = cd.temperature();
 
             sensor_msgs::Temperature msgTemp;
-            msgTemp.header.stamp = msgIMU.header.stamp;
+            msgTemp.header.stamp    = msgIMU.header.stamp;
             msgTemp.header.frame_id = msgIMU.header.frame_id;
-            msgTemp.temperature = temp;
+            msgTemp.temperature     = temp;
             pubTemp.publish(msgTemp);
         }
 
@@ -527,20 +542,20 @@ void BinaryAsyncMessageReceived(void* userData, Packet& p, size_t index)
             float pres = cd.pressure();
 
             sensor_msgs::FluidPressure msgPres;
-            msgPres.header.stamp = msgIMU.header.stamp;
+            msgPres.header.stamp    = msgIMU.header.stamp;
             msgPres.header.frame_id = msgIMU.header.frame_id;
-            msgPres.fluid_pressure = pres;
+            msgPres.fluid_pressure  = pres;
             pubPres.publish(msgPres);
         }
     }
 
-    // Resynchronization check 
-    ros::Duration lastSyncDelta = currTime - lastSyncTime;
-    if ((lastSyncDelta.toSec() >= RESYNC_INTERVAL)) 
-    {
-        reSynchronize = true;
-    }
-    
+    // Resynchronization check
+    // ros::Duration lastSyncDelta = currTime - lastSyncTime;
+    // if ((lastSyncDelta.toSec() >= RESYNC_INTERVAL))
+    // {
+    //     reSynchronize = true;
+    // }
+
     // Increment time history
     prevTime = currTime;
 }
