@@ -1,0 +1,18 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "ROS: Launch",
+            "type": "ros",
+            "request": "launch",
+            "target": "${workspaceFolder}/launch/vectornav.launch",
+        },
+        {
+            "name": "ROS: Build & Launch",
+            "type": "ros",
+            "request": "launch",
+            "target": "${workspaceFolder}/launch/vectornav.launch",
+            "preLaunchTask": "make_debug",
+        }
+    ]
+}

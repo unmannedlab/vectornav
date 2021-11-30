@@ -237,7 +237,7 @@ int main(int argc, char *argv[])
     // vs.writeAsyncDataOutputFrequency(async_output_rate);
     // Configure binary output message
     BinaryOutputRegister bor(ASYNCMODE_PORT1,
-                             2,    // SensorImuRate / async_output_rate,  // update rate [ms]
+                             1,    // SensorImuRate / async_output_rate,  // update rate [ms]
                              COMMONGROUP_QUATERNION
                                  | COMMONGROUP_ANGULARRATE
                                  //| COMMONGROUP_POSITION
